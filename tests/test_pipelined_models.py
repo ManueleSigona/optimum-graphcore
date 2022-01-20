@@ -83,6 +83,7 @@ def _get_models_to_test(model_to_test_names):
 
 MODELS_TO_TEST_NAMES = {
     "bert": ("bert-base-uncased", "Graphcore/bert-base-ipu"),
+    "gpt2": ("gpt2", "Graphcore/gpt2-small-ipu"),
     "roberta": ("roberta-base", "Graphcore/roberta-base-ipu"),
     "vit": ("google/vit-base-patch16-224", "Graphcore/vit-base-ipu"),
 }
