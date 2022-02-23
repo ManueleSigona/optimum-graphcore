@@ -386,7 +386,7 @@ def main():
         sample = batch[data_args.audio_column_name]
 
         inputs = feature_extractor(
-            sample["array"], sampling_rate=sample["sampling_rate"], max_length=max_length, truncation=True
+            sample["array"], sampling_rate=sample["sampling_rate"], padding="max_length", max_length=max_length, truncation=True
         )
         batch["input_values"] = inputs.input_values[0]
         batch["input_length"] = len(inputs.input_values[0])
