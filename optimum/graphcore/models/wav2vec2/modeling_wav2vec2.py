@@ -21,6 +21,7 @@ from transformers import (
     Wav2Vec2ForPreTraining,
 )
 from .ipu_layer_drop import IPUWav2Vec2Encoder, IPUWav2Vec2EncoderStableLayerNorm, IPUWav2Vec2Adapter
+from .ipu_gumbel_vector_quantizer import IPUWav2Vec2GumbelVectorQuantizer
 
 from ...modeling_utils import PipelineMixin, register
 
@@ -32,13 +33,16 @@ logger = logging.get_logger(__name__)
 class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
     def __init__(self, config) -> None:
         super().__init__(config)
-
+        # Inject IPU Layer Drop
         if config.do_stable_layer_norm:
             self.wav2vec2.encoder = IPUWav2Vec2EncoderStableLayerNorm(config)
         else:
             self.wav2vec2.encoder = IPUWav2Vec2Encoder(config)
 
         self.wav2vec2.adapter = IPUWav2Vec2Adapter(config) if config.add_adapter else None
+        # Inject IPU Gumbel Vector Quantizer
+        self.quantizer = IPUWav2Vec2GumbelVectorQuantizer(config)
+
 
     def forward(
         self,
