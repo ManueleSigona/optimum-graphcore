@@ -255,7 +255,7 @@ class DataCollatorForWav2Vec2Pretraining:
         # make sure that no loss is computed on padded inputs
         if batch.get("attention_mask") is not None:
             # compute real output lengths according to convolution formula
-            batch["sub_attention_mask"] = self.model._get_feature_vector_attention_mask(
+            sub_attention_mask = self.model._get_feature_vector_attention_mask(
                 mask_indices_seq_length, batch["attention_mask"]
             )
 
@@ -266,7 +266,7 @@ class DataCollatorForWav2Vec2Pretraining:
             features_shape,
             self.model.config.mask_time_prob,
             self.model.config.mask_time_length,
-            attention_mask=batch.get("sub_attention_mask"),
+            attention_mask=sub_attention_mask,
             min_masks=1,
         )
 
