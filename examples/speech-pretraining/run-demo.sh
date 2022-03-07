@@ -1,0 +1,14 @@
+python run_pretraining.py \
+       --model_name_or_path="patrickvonplaten/wav2vec2-base-v2" \
+       --dataset_name="librispeech_asr" \
+       --dataset_config_name="clean" \
+       --train_split_name="validation" \
+       --ipu_config_name . \
+       --output_dir="./wav2vec2-pretrained-demo" \
+       --max_duration_in_seconds="20" \
+       --min_duration_in_seconds="2.0" \
+       --do_train \
+       --overwrite_output_dir \
+       --layerdrop 0.05 \
+       --per_device_train_batch_size=1 \
+       --weight_decay="0.01"
