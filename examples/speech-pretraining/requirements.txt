@@ -1,6 +1,5 @@
 datasets >= 1.18.0
-torch >= 1.5
-torchaudio
+torchaudio == 0.10.0
 librosa
 jiwer
 soundfile
