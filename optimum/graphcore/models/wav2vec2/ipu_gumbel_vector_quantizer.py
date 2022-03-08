@@ -1,18 +1,15 @@
 import torch
-from torch.nn import functional as F
 import warnings
 from transformers.models.wav2vec2.modeling_wav2vec2 import (
     Wav2Vec2GumbelVectorQuantizer,
 )
 
-SERIALISATION_FACTOR = 4
 
 def _ipu_gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
 
     if eps != 1e-10:
         warnings.warn("`eps` parameter is deprecated and has no effect.")
 
-    
     gumbels = (
         -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format).exponential_().log()
     )  # ~Gumbel(0,1)
@@ -43,8 +40,6 @@ def _ipu_gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
     
 class IPUWav2Vec2GumbelVectorQuantizer(Wav2Vec2GumbelVectorQuantizer):
     def forward(self, hidden_states, mask_time_indices=None):
-
-        serialisation_factor = SERIALISATION_FACTOR
         
         batch_size, sequence_length, hidden_size = hidden_states.shape
 
@@ -80,76 +75,12 @@ class IPUWav2Vec2GumbelVectorQuantizer(Wav2Vec2GumbelVectorQuantizer):
 
             perplexity = self._compute_perplexity(codevector_probs, mask_time_indices)
 
-        codevector_probs = codevector_probs.view(batch_size * sequence_length, -1)
-        # use probs to retrieve codevectors
-
-        # First, pad codevector_probs with zeros on bs*seqlen axis
-        # Want e.g. (999, 640) -> (1000, 640)
-
-        bs_seqlen_product = batch_size * sequence_length
-        remainder = bs_seqlen_product % serialisation_factor
-
-        if not remainder == 0:
-            padding_for_serialisation = serialisation_factor - remainder
-
-        else:
-            padding_for_serialisation = 0
-
-        codevector_probs = F.pad(
-            codevector_probs,
-            # Pad with zeros on dim=-2, on the right
-            (0, 0, 0, padding_for_serialisation),
-            mode='constant',
-            value=0.0
-        )
-
-        # Split codevector_probs into chunks
-
-        items_per_chunk = (bs_seqlen_product + padding_for_serialisation) \
-                          // serialisation_factor
-
-        codevector_prob_chunks = torch.split(
-            codevector_probs,
-            # Use list here as sanity check
-            split_size_or_sections=[
-                 items_per_chunk for _ in range(serialisation_factor)
-            ],
-            dim=-2
-        )
-
-        codevectors_chunks = []
-
-        # Do same mutiplication as before on each chunk
-
-        for chunk in codevector_prob_chunks:
-
-            codevectors_per_group_chunk = chunk.unsqueeze(-1) * self.codevectors
-            codevectors_chunk = (
-                codevectors_per_group_chunk.view(
-                    items_per_chunk, self.num_groups, self.num_vars, -1
-                )
-                .sum(-2)
-                # Move this view change to the very end until padding removed
-                #.view(batch_size, sequence_length, -1)
-            )
-
-            codevectors_chunks.append(codevectors_chunk)
-
-        # Each codevectors_chunk has shape (BS * SL / SF, num_groups, cvdim)
-        #     where BS = (micro) batch size, SL = sequence length,
-        #     SF = serialisation factor
-
-        # so we concatenate on dim=-3
-
-        codevectors = torch.cat(codevectors_chunks, dim=-3)
-
-        # Remove padding
-        # Need padding_for_serialisation > 0 condition since otherwise
-        #     the slice is [:0] which isn't what we want!
-        if padding_for_serialisation > 0:
-            codevectors = codevectors[..., :-(padding_for_serialisation), :, :]
-
-        # Perform delayed view change
+        index = index.view(batch_size * sequence_length, self.num_groups)
+        # offsets will be like [0, num_vars, 2*num_vars, ..., n*num_vars] where n = num_groups-1
+        offsets = torch.arange(0, self.num_vars * self.num_groups, self.num_vars)
+        index += offsets.unsqueeze(0)
+        # Extract rows from codevectors corresponding to indices in the index tensor
+        codevectors = torch.index_select(self.codevectors.squeeze(), 0, index.flatten())
         codevectors = codevectors.view(batch_size, sequence_length, -1)
 
         return codevectors, perplexity
