@@ -278,7 +278,7 @@ class DataCollatorForWav2Vec2Pretraining:
         )
         batch["mask_time_indices"] = torch.tensor(mask_time_indices, dtype=torch.long, device=device)
         batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices, dtype=torch.long, device=device)
-        return batch
+        return batch.data
 
 
 def main():
