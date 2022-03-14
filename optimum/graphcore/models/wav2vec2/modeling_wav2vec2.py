@@ -242,27 +242,27 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
 
         self._add_begin_block(
             self.wav2vec2.feature_extractor.conv_layers[3],
-            name="Conv[3,7)", ipu_id=2
+            name="Conv[3,7)+PCE", ipu_id=2
         )
 
         self._add_begin_block(
-            self.wav2vec2.encoder.pos_conv_embed,
-            name="PCE+EL[00,02)", ipu_id=3
+            self.wav2vec2.encoder.layers[0],
+            name="EL[00,03)", ipu_id=3
         )
 
         self._add_begin_block(
-            self.wav2vec2.encoder.layers[2],
-            name="EL[02,06)", ipu_id=4
+            self.wav2vec2.encoder.layers[3],
+            name="EL[03,06)", ipu_id=4
         )
 
         self._add_begin_block(
             self.wav2vec2.encoder.layers[6],
-            name="EL[06,10)", ipu_id=5
+            name="EL[06,09)", ipu_id=5
         )
 
         self._add_begin_block(
-            self.wav2vec2.encoder.layers[10],
-            name="EL[10,12)+ELQ", ipu_id=6
+            self.wav2vec2.encoder.layers[9],
+            name="EL[09,12)+ELQ", ipu_id=6
         )
 
         self._add_begin_block(
