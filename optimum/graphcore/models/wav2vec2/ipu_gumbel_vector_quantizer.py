@@ -1,3 +1,4 @@
+import poptorch
 import torch
 import warnings
 from transformers.models.wav2vec2.modeling_wav2vec2 import (
@@ -39,6 +40,30 @@ def _ipu_gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
     
     
 class IPUWav2Vec2GumbelVectorQuantizer(Wav2Vec2GumbelVectorQuantizer):
+
+    def __init__(self, *args, **kwargs):
+
+        super().__init__(*args, **kwargs)
+
+        del self.temperature
+        self.register_buffer("temperature", torch.Tensor([2.0]))
+
+    def _get_temperature(self):
+
+        decay = 0.999995
+        end = 0.5
+
+        decayed_temp = self.temperature * decay
+        new_temp = torch.where(
+            decayed_temp >= torch.Tensor([end]),
+            decayed_temp, torch.Tensor([end])
+        )
+
+        self.temperature.copy_(new_temp)
+
+        return poptorch.ipu_print_tensor(self.temperature, "gsvq_temp")[0]
+
+
     def forward(self, hidden_states, mask_time_indices=None):
         
         batch_size, sequence_length, hidden_size = hidden_states.shape
@@ -48,9 +73,12 @@ class IPUWav2Vec2GumbelVectorQuantizer(Wav2Vec2GumbelVectorQuantizer):
         hidden_states = hidden_states.view(batch_size * sequence_length * self.num_groups, -1)
 
         if self.training:
+
+            temperature = self._get_temperature()
+
             # sample code vector probs via gumbel in differentiateable way
             codevector_probs = _ipu_gumbel_softmax(
-                hidden_states.float(), tau=self.temperature, hard=True
+                hidden_states.float(), tau=temperature, hard=True
             ).type_as(hidden_states)
 
             # compute perplexity
