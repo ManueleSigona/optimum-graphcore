@@ -28,6 +28,7 @@ from datasets import DatasetDict, load_dataset
 import transformers
 from optimum.graphcore import IPUConfig, IPUTrainer
 from optimum.graphcore import IPUTrainingArguments as TrainingArguments
+from optimum.graphcore.models.wav2vec2.modeling_wav2vec2 import _sample_negative_indices
 from transformers import (
     AutoConfig,
     AutoFeatureExtractor,
@@ -38,7 +39,7 @@ from transformers import (
     Wav2Vec2ForPreTraining,
     set_seed,
 )
-from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
+from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
@@ -84,7 +85,7 @@ class ModelArguments:
         metadata={"help": "The dropout probability for the final projection layer."},
     )
     mask_time_prob: float = field(
-        default=0.05,
+        default=0.65,
         metadata={
             "help": "Probability of each feature vector along the time axis to be chosen as the start of the vector"
             "span to be masked. Approximately ``mask_time_prob * sequence_length // mask_time_length`` feature"
@@ -244,6 +245,9 @@ class DataCollatorForWav2Vec2Pretraining:
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors="pt",
         )
+        lengths = torch.sum(batch["input_values"] != 0.0, 1)
+        attention_mask = torch.arange(batch["input_values"].shape[-1]).unsqueeze(0) < lengths.unsqueeze(1)
+        batch["attention_mask"] = attention_mask.type(torch.int32)
 
         device = batch["input_values"].device
         batch_size = batch["input_values"].shape[0]
@@ -456,6 +460,7 @@ def main():
             "layerdrop": model_args.layerdrop,
             "ctc_loss_reduction": model_args.ctc_loss_reduction,
             "activation_dropout": model_args.activation_dropout,
+            "layer_norm_eps": 0.0001
         }
     )
 
