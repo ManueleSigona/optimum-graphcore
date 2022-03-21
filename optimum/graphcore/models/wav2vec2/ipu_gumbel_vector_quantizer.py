@@ -11,9 +11,9 @@ def _ipu_gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
         warnings.warn("`eps` parameter is deprecated and has no effect.")
 
     gumbels = (
-        -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format).exponential_().log()
+        -(torch.empty_like(logits, memory_format=torch.legacy_contiguous_format).exponential_() + 1e-4).log()
     )  # ~Gumbel(0,1)
-    
+
     # Old workaround for missing `torch.exponential_`
     #exponential_distribution = torch.distributions.exponential.Exponential(1.0)
     #gumbels = -exponential_distribution.sample(logits.size()).log()

@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Tuple, Optional
+import numpy as np
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import poptorch
 from optimum.utils import logging
@@ -58,6 +62,10 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
         self.wav2vec2.adapter = IPUWav2Vec2Adapter(config) if config.add_adapter else None
         # Inject IPU Gumbel Vector Quantizer
         self.quantizer = IPUWav2Vec2GumbelVectorQuantizer(config)
+
+        eps = 1e-4
+        for conv_layer in self.wav2vec2.feature_extractor.conv_layers:
+            conv_layer.layer_norm.eps = eps
 
 
     def forward(
@@ -111,6 +119,9 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
             # 3. sample K negatives (distractors) quantized states for contrastive loss
             # if attention_mask is passed, make sure that padded feature vectors cannot be sampled
             # sample negative quantized vectors BTC => (BxT)C
+            # Moved the negative sampling batch offsetting into the model
+            # Commenting this out because of Poptorch issue. With batch size 1 it's not needed anyway
+            # sampled_negative_indices += torch.arange(batch_size)[:, None, None] * sequence_length
             negative_quantized_features = quantized_features.view(-1, hidden_size)[
                 sampled_negative_indices.long().view(-1)
             ]
@@ -129,21 +140,18 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
 
             # 5. if a negative vector is identical to the positive (i.e. when codebook utilization is low),
             # its cosine similarity will be masked
+            neg_is_pos = (quantized_features == negative_quantized_features).all(-1)
 
-            # Change 1: temporary workaround while aten::all unsupported
-            #neg_is_pos = (quantized_features == negative_quantized_features).all(-1)
-            neg_is_pos = (quantized_features != negative_quantized_features).to(torch.int32).sum(-1).bool().logical_not()
-
-            # Change 2: this if-statement is untraceable
-            #if neg_is_pos.any():
-            logits[1:][neg_is_pos] = float("-inf")
+            neg_is_pos = F.pad(neg_is_pos.type(torch.long), (0, 0, 0, 0, 1, 0)).type(torch.bool)
+            logits = logits.masked_fill(neg_is_pos, -1e3)
 
             # 6. compute contrastive loss \mathbf{L}_m = cross_entropy(logs) =
             # -log(exp(sim(c_t, q_t)/\kappa) / \sum_{\sim{q}} exp(sim(c_t, \sim{q})/\kappa))
-            logits = logits.transpose(0, 2).reshape(-1, logits.size(0))
-            target = ((1 - mask_time_indices.long()) * -100).transpose(0, 1).flatten()
+            logits = logits.permute(1, 2, 0).reshape(batch_size * sequence_length, -1)
+            target = ((1 - mask_time_indices.long()) * -100).flatten()
 
-            contrastive_loss = nn.functional.cross_entropy(logits.float(), target, reduction="sum")
+            contrastive_loss = F.cross_entropy(logits.float(), target, reduction="sum")
+
             # 7. compute diversity loss: \mathbf{L}_d
             num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
             diversity_loss = ((num_codevectors - codevector_perplexity) / num_codevectors) * mask_time_indices.sum()
@@ -189,8 +197,30 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
         attention_mask[(torch.arange(attention_mask.shape[0], device=attention_mask.device), output_lengths - 1)] = 1
         attention_mask = attention_mask.flip([-1]).cumsum(-1).flip([-1]).bool()
         return attention_mask
-    
-    
+
+
+    @staticmethod
+    def compute_contrastive_logits(
+            target_features: torch.FloatTensor,
+            negative_features: torch.FloatTensor,
+            predicted_features: torch.FloatTensor,
+            temperature: int = 0.1,
+    ):
+        """
+        Compute logits for contrastive loss based using cosine similarity as the distance measure between
+        `[positive_feature, negative_features]` and `[predicted_features]`. Additionally, temperature can be applied.
+        """
+        target_features = torch.cat([target_features, negative_features], dim=0)
+
+        logits = torch.cosine_similarity(predicted_features.float(), target_features.float(), dim=-1, eps=1e-4).type_as(
+            target_features
+        )
+
+        # apply temperature
+        logits = logits / temperature
+        return logits
+
+
     def _add_begin_block(self, module, name, ipu_id):
 
         module = poptorch.BeginBlock(module, name, ipu_id)
@@ -239,3 +269,38 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
             self.quantizer,
             name="Quantizer+Losses", ipu_id=7
         )
+
+def _sample_negative_indices(
+    features_shape: Tuple, num_negatives: int, mask_time_indices: Optional[np.ndarray] = None
+):
+    """
+    Sample `num_negatives` vectors from feature vectors.
+    """
+    batch_size, sequence_length = features_shape
+
+    # generate indices of the positive vectors themselves, repeat them `num_negatives` times
+    sequence_length_range = np.arange(sequence_length)
+
+    # get `num_negatives` random vector indices from the same utterance
+    sampled_negative_indices = np.zeros(shape=(batch_size, sequence_length, num_negatives), dtype=np.int32)
+
+    mask_time_indices = (
+        mask_time_indices.astype(np.bool) if mask_time_indices is not None else np.ones(features_shape, dtype=np.bool)
+    )
+
+    for batch_idx in range(batch_size):
+        high = mask_time_indices[batch_idx].sum() - 1
+        mapped_masked_indices = sequence_length_range[mask_time_indices[batch_idx]]
+
+        feature_indices = np.broadcast_to(np.arange(high + 1)[:, None], (high + 1, num_negatives))
+        sampled_indices = np.random.randint(0, high, size=(high + 1, num_negatives))
+        # avoid sampling the same positive vector, but keep the distribution uniform
+        sampled_indices[sampled_indices >= feature_indices] += 1
+
+        # remap to actual indices
+        sampled_negative_indices[batch_idx][mask_time_indices[batch_idx]] = mapped_masked_indices[sampled_indices]
+
+        # Moved the offsetting into the model to stop issues with gradient accumulation
+        # sampled_negative_indices[batch_idx] += batch_idx * sequence_length
+
+    return sampled_negative_indices
