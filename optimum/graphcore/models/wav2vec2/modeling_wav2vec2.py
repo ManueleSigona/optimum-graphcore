@@ -1,4 +1,4 @@
-# Copyright (c) 2021 Graphcore Ltd. All rights reserved.
+# Copyright (c) 2022 Graphcore Ltd. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ from typing import Tuple, Optional
 import numpy as np
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 import poptorch
@@ -38,9 +37,7 @@ logger = logging.get_logger(__name__)
 @register(Wav2Vec2ForPreTraining)
 class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
     def __init__(self, config) -> None:
-
         # Override return_dict in config
-        
         super().__init__(config)
 
         self.wav2vec2 = IPUWav2Vec2Model(config)
@@ -102,7 +99,7 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
 
         if attention_mask is not None:
             # compute reduced attention_mask correponding to feature vectors
-            attention_mask = self._get_feature_vector_attention_mask(
+            attention_mask = self.wav2vec2._get_feature_vector_attention_mask(
                 extract_features.shape[1], attention_mask, add_adapter=False
             )
 
@@ -176,29 +173,6 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
         )
 
 
-    def _get_feature_vector_attention_mask(
-        self, feature_vector_length: int, attention_mask: torch.LongTensor, add_adapter=None
-    ):
-        # Effectively attention_mask.sum(-1), but not inplace to be able to run
-        # on inference mode.
-        #non_padded_lengths = attention_mask.cumsum(dim=-1)[:, -1]
-        #non_padded_lengths = attention_mask.cumsum(dim=-1)[:, 249999]
-        non_padded_lengths = attention_mask.sum(dim=-1)
-
-        output_lengths = self._get_feat_extract_output_lengths(non_padded_lengths, add_adapter=add_adapter)
-        output_lengths = output_lengths.to(torch.long)
-
-        batch_size = attention_mask.shape[0]
-
-        attention_mask = torch.zeros(
-            (batch_size, feature_vector_length), dtype=attention_mask.dtype, device=attention_mask.device
-        )
-        # these two operations makes sure that all values before the output lengths idxs are attended to
-        attention_mask[(torch.arange(attention_mask.shape[0], device=attention_mask.device), output_lengths - 1)] = 1
-        attention_mask = attention_mask.flip([-1]).cumsum(-1).flip([-1]).bool()
-        return attention_mask
-
-
     @staticmethod
     def compute_contrastive_logits(
             target_features: torch.FloatTensor,
@@ -222,12 +196,10 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
 
 
     def _add_begin_block(self, module, name, ipu_id):
-
         module = poptorch.BeginBlock(module, name, ipu_id)
 
 
     def parallelize(self):
-
         super().parallelize()
 
         self._add_begin_block(

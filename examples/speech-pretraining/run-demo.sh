@@ -13,4 +13,5 @@ python run_pretraining.py \
        --per_device_train_batch_size=1 \
        --dataloader_mode="async_rebatched" \
        --dataloader_num_workers=8 \
+       --num_train_epochs=1 \
        --weight_decay="0.01"

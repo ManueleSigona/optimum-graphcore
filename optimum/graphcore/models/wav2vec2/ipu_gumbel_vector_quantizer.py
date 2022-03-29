@@ -1,4 +1,17 @@
-import poptorch
+# Copyright (c) 2022 Graphcore Ltd. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 import warnings
 from transformers.models.wav2vec2.modeling_wav2vec2 import (
@@ -15,10 +28,6 @@ def _ipu_gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
         -(torch.empty_like(logits, memory_format=torch.legacy_contiguous_format).exponential_() + 1e-4).log()
     )  # ~Gumbel(0,1)
 
-    # Old workaround for missing `torch.exponential_`
-    #exponential_distribution = torch.distributions.exponential.Exponential(1.0)
-    #gumbels = -exponential_distribution.sample(logits.size()).log()
-
     gumbels = (logits + gumbels) / tau  # ~Gumbel(logits,tau)
     y_soft = gumbels.softmax(dim)
 
@@ -26,11 +35,9 @@ def _ipu_gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
         # Straight through.
         index = y_soft.max(dim, keepdim=True)[1]
 
-        # Same `scatter_` bug as in IPUWav2Vec2GumbelVectorQuantizer inference
-        # Needs to be fixed here too
         update_values = torch.ones_like(index, dtype=logits.dtype)
         y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format).scatter_(dim, index, update_values)
-        
+
         ret = y_hard - y_soft.detach() + y_soft
     else:
         # Reparametrization trick.
@@ -42,14 +49,12 @@ def _ipu_gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
 class IPUWav2Vec2GumbelVectorQuantizer(Wav2Vec2GumbelVectorQuantizer):
 
     def __init__(self, *args, **kwargs):
-
         super().__init__(*args, **kwargs)
 
         del self.temperature
         self.register_buffer("temperature", torch.Tensor([2.0]))
 
     def _get_temperature(self):
-
         decay = 0.999995
         end = 0.5
 
@@ -61,11 +66,10 @@ class IPUWav2Vec2GumbelVectorQuantizer(Wav2Vec2GumbelVectorQuantizer):
 
         self.temperature.copy_(new_temp)
 
-        return poptorch.ipu_print_tensor(self.temperature, "gsvq_temp")[0]
+        return self.temperature
 
 
     def forward(self, hidden_states, mask_time_indices=None):
-        
         batch_size, sequence_length, hidden_size = hidden_states.shape
 
         # project to codevector dim
@@ -73,7 +77,6 @@ class IPUWav2Vec2GumbelVectorQuantizer(Wav2Vec2GumbelVectorQuantizer):
         hidden_states = hidden_states.view(batch_size * sequence_length * self.num_groups, -1)
 
         if self.training:
-
             temperature = self._get_temperature()
 
             # sample code vector probs via gumbel in differentiateable way
