@@ -21,9 +21,16 @@ import torch.nn.functional as F
 import poptorch
 from optimum.utils import logging
 from transformers import (
-    Wav2Vec2ForPreTraining,
+    Wav2Vec2Model,
+    Wav2Vec2ForPreTraining
 )
-from transformers.models.wav2vec2.modeling_wav2vec2 import Wav2Vec2ForPreTrainingOutput
+from transformers.models.wav2vec2.modeling_wav2vec2 import (
+    Wav2Vec2Encoder,
+    Wav2Vec2EncoderStableLayerNorm,
+    Wav2Vec2Adapter,
+    Wav2Vec2GumbelVectorQuantizer,
+    Wav2Vec2ForPreTrainingOutput
+)
 from .ipu_layer_drop import IPUWav2Vec2Encoder, IPUWav2Vec2EncoderStableLayerNorm, IPUWav2Vec2Adapter
 from .ipu_gumbel_vector_quantizer import IPUWav2Vec2GumbelVectorQuantizer
 from .ipu_wav2vec2_model import IPUWav2Vec2Model
@@ -36,33 +43,161 @@ logger = logging.get_logger(__name__)
 
 @register(Wav2Vec2ForPreTraining)
 class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
-    def __init__(self, config) -> None:
-        # Override return_dict in config
-        super().__init__(config)
 
-        self.wav2vec2 = IPUWav2Vec2Model(config)
+    def change_wav2vec2_encoder_class(self, restore: bool):
+        """Changes the encoder class to update its forward pass so that it uses our custom version.
 
-        # Inject IPU Layer Drop
-        # We also pad the sequence length for self-attention
-        #     This makes the memory use across tiles more balanced
-        if config.do_stable_layer_norm:
-            self.wav2vec2.encoder = IPUWav2Vec2EncoderStableLayerNorm(
-                config,
-                sequence_length_padding_divisor=4
-            )
+        Args:
+            restore: whether to restore the encoder to its original version or not.
+        """
+        if restore:
+            if self.config.do_stable_layer_norm:
+                encoder = Wav2Vec2EncoderStableLayerNorm(self.config)
+            else:
+                encoder = Wav2Vec2Encoder(self.config)
         else:
-            self.wav2vec2.encoder = IPUWav2Vec2Encoder(
-                config,
-                sequence_length_padding_divisor=4
-            )
+            # Inject IPU Layer Drop
+            # We also pad the sequence length for self-attention
+            # This makes the memory use across tiles more balanced
+            if self.config.do_stable_layer_norm:
+                encoder = IPUWav2Vec2EncoderStableLayerNorm(
+                    self.config,
+                    sequence_length_padding_divisor=4
+                )
+            else:
+                encoder = IPUWav2Vec2Encoder(
+                    self.config,
+                    sequence_length_padding_divisor=4
+                )
+        self.wav2vec2.encoder = encoder
 
-        self.wav2vec2.adapter = IPUWav2Vec2Adapter(config) if config.add_adapter else None
-        # Inject IPU Gumbel Vector Quantizer
-        self.quantizer = IPUWav2Vec2GumbelVectorQuantizer(config)
 
-        eps = 1e-4
-        for conv_layer in self.wav2vec2.feature_extractor.conv_layers:
-            conv_layer.layer_norm.eps = eps
+    def change_wav2vec2_adapter_class(self, restore: bool):
+        """Changes the adapter class to update its forward pass so that it uses our custom version.
+
+        Args:
+            restore: whether to restore the adapter to its original version or not.
+        """
+        if self.config.add_adapter:
+            if restore:
+                adapter = Wav2Vec2Adapter(self.config)
+            else:
+                adapter = IPUWav2Vec2Adapter(self.config)
+        else:
+            adapter = None
+        self.wav2vec2.adapter = adapter
+
+
+    def change_quantizer_class(self, restore: bool):
+        """Changes the quantizer class to update its forward pass so that it uses our custom version.
+
+        Args:
+            restore: whether to restore the quantizer to its original version or not.
+        """
+        if restore:
+            quantizer = Wav2Vec2GumbelVectorQuantizer(self.config)
+        else:
+            quantizer = IPUWav2Vec2GumbelVectorQuantizer(self.config)
+        self.quantizer = quantizer
+
+
+    def change_conv_eps(self, restore: bool):
+        """Changes the epsilons in the layer norms of the conv layers to a value suitable for float16.
+
+        Args:
+            restore: whether to restore the epsilons to their original version or not.
+        """
+        if restore:
+            for i, conv_layer in enumerate(self.wav2vec2.feature_extractor.conv_layers):
+                # Restore the original values
+                conv_layer.layer_norm.eps = self.original_eps[i]
+        else:
+            self.original_eps = []
+            eps = 1e-4
+            for conv_layer in self.wav2vec2.feature_extractor.conv_layers:
+                # Save the original values, to restore later
+                self.original_eps.append(conv_layer.layer_norm.eps)
+                conv_layer.layer_norm.eps = eps
+
+
+    def _add_begin_block(self, module, name, ipu_id):
+        module = poptorch.BeginBlock(module, name, ipu_id)
+
+
+    def parallelize(self):
+        """
+        Transform the model to run in an IPU pipeline.
+        - Adds pipeline stages to the model
+        - Replaces some layers with IPU-specialised ones
+        - Set eps to a stable value in float16
+
+        Recommended usage:
+        ```
+        model = PipelinedWav2Vec2ForPreTraining(config).parallelize().half()
+        ```
+        """
+        super().parallelize()
+
+        self.wav2vec2.__class__ = IPUWav2Vec2Model
+        self.change_wav2vec2_encoder_class(False)
+        self.change_wav2vec2_adapter_class(False)
+        self.change_quantizer_class(False)
+        self.change_conv_eps(False)
+
+        self._add_begin_block(
+            self.wav2vec2.feature_extractor.conv_layers[0],
+            name="Conv[0,2)", ipu_id=0
+        )
+
+        self._add_begin_block(
+            self.wav2vec2.feature_extractor.conv_layers[2],
+            name="Conv[2,3)", ipu_id=1
+        )
+
+        self._add_begin_block(
+            self.wav2vec2.feature_extractor.conv_layers[3],
+            name="Conv[3,7)+PCE", ipu_id=2
+        )
+
+        self._add_begin_block(
+            self.wav2vec2.encoder.layers[0],
+            name="EL[00,03)", ipu_id=3
+        )
+
+        self._add_begin_block(
+            self.wav2vec2.encoder.layers[3],
+            name="EL[03,06)", ipu_id=4
+        )
+
+        self._add_begin_block(
+            self.wav2vec2.encoder.layers[6],
+            name="EL[06,09)", ipu_id=5
+        )
+
+        self._add_begin_block(
+            self.wav2vec2.encoder.layers[9],
+            name="EL[09,12)+ELQ", ipu_id=6
+        )
+
+        self._add_begin_block(
+            self.quantizer,
+            name="Quantizer+Losses", ipu_id=7
+        )
+
+
+    def deparallelize(self):
+        """
+        Undo the changes to the model done by `parallelize`.
+        You should call this before doing `save_pretrained` so that the `model.state_dict` is
+        fully compatible with `transformers.Wav2Vec2ForPreTraining`.
+        """
+        super().deparallelize()
+        self.change_wav2vec2_encoder_class(True)
+        self.change_wav2vec2_adapter_class(True)
+        self.change_quantizer_class(True)
+        self.change_conv_eps(True)
+        self.wav2vec2.__class__ = Wav2Vec2Model
+        return self
 
 
     def forward(
@@ -194,53 +329,6 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
         logits = logits / temperature
         return logits
 
-
-    def _add_begin_block(self, module, name, ipu_id):
-        module = poptorch.BeginBlock(module, name, ipu_id)
-
-
-    def parallelize(self):
-        super().parallelize()
-
-        self._add_begin_block(
-            self.wav2vec2.feature_extractor.conv_layers[0],
-            name="Conv[0,2)", ipu_id=0
-        )
-
-        self._add_begin_block(
-            self.wav2vec2.feature_extractor.conv_layers[2],
-            name="Conv[2,3)", ipu_id=1
-        )
-
-        self._add_begin_block(
-            self.wav2vec2.feature_extractor.conv_layers[3],
-            name="Conv[3,7)+PCE", ipu_id=2
-        )
-
-        self._add_begin_block(
-            self.wav2vec2.encoder.layers[0],
-            name="EL[00,03)", ipu_id=3
-        )
-
-        self._add_begin_block(
-            self.wav2vec2.encoder.layers[3],
-            name="EL[03,06)", ipu_id=4
-        )
-
-        self._add_begin_block(
-            self.wav2vec2.encoder.layers[6],
-            name="EL[06,09)", ipu_id=5
-        )
-
-        self._add_begin_block(
-            self.wav2vec2.encoder.layers[9],
-            name="EL[09,12)+ELQ", ipu_id=6
-        )
-
-        self._add_begin_block(
-            self.quantizer,
-            name="Quantizer+Losses", ipu_id=7
-        )
 
 def _sample_negative_indices(
     features_shape: Tuple, num_negatives: int, mask_time_indices: Optional[np.ndarray] = None
