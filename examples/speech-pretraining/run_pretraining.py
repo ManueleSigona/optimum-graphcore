@@ -34,7 +34,6 @@ from transformers import (
     AutoFeatureExtractor,
     AutoModelForPreTraining,
     HfArgumentParser,
-    TrainerCallback,
     Wav2Vec2FeatureExtractor,
     Wav2Vec2ForPreTraining,
     set_seed,
@@ -110,15 +109,6 @@ class ModelArguments:
     layerdrop: float = field(default=0.0, metadata={"help": "The LayerDrop probability."})
     ctc_loss_reduction: Optional[str] = field(
         default="mean", metadata={"help": "The way the ctc loss should be reduced. Should be one of 'mean' or 'sum'."}
-    )
-    max_gumbel_temperature: Optional[float] = field(
-        default=2.0, metadata={"help": "Maximum temperature for gumbel softmax."}
-    )
-    min_gumbel_temperature: Optional[float] = field(
-        default=0.5, metadata={"help": "Minimum temperature for gumbel softmax."}
-    )
-    gumbel_temperature_decay: Optional[float] = field(
-        default=0.999995, metadata={"help": "Decay of gumbel temperature during training."}
     )
 
 
@@ -477,31 +467,6 @@ def main():
     # Instantiate custom data collator
     data_collator = DataCollatorForWav2Vec2Pretraining(
         model=model, feature_extractor=feature_extractor)
-    
-    # Create a callback that updates the Gumbel temperature
-    class GumbelTemperatureCallback(TrainerCallback):
-        def __init__(self, max_gumbel_temperature, min_gumbel_temperature, gumbel_temperature_decay):
-            super(GumbelTemperatureCallback, self).__init__()
-            self.max_gumbel_temperature = max_gumbel_temperature
-            self.min_gumbel_temperature = min_gumbel_temperature
-            self.gumbel_temperature_decay = gumbel_temperature_decay
-
-        def on_step_end(self, args, state, control, **kwargs):
-            # update gumbel temperature
-            gumbel_temperature = max(
-                self.max_gumbel_temperature * self.gumbel_temperature_decay**state.global_step,
-                self.min_gumbel_temperature,
-            )
-            if hasattr(model, "module"):
-                model.module.set_gumbel_temperature(gumbel_temperature)
-            else:
-                model.set_gumbel_temperature(gumbel_temperature)
-    
-    gumbel_callback = GumbelTemperatureCallback(
-        model_args.max_gumbel_temperature,
-        model_args.min_gumbel_temperature,
-        model_args.gumbel_temperature_decay,
-    )
 
     # Initialize Trainer
     trainer = IPUTrainer(
@@ -511,8 +476,7 @@ def main():
         args=training_args,
         train_dataset=vectorized_datasets["train"] if training_args.do_train else None,
         eval_dataset=vectorized_datasets["eval"] if training_args.do_eval else None,
-        tokenizer=feature_extractor,
-        callbacks=[gumbel_callback],
+        tokenizer=feature_extractor
     )
 
     # 6. Finally, we can start training

@@ -1,75 +1,21 @@
-from typing import Optional
+# Copyright (c) 2022 Graphcore Ltd. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import torch
 from transformers import Wav2Vec2Model
 
 class IPUWav2Vec2Model(Wav2Vec2Model):
-
-    def _mask_hidden_states(
-        self,
-        hidden_states: torch.FloatTensor,
-        mask_time_indices: Optional[torch.FloatTensor] = None,
-        attention_mask: Optional[torch.LongTensor] = None,
-    ):
-        """
-        Masks extracted features along time axis and/or along feature axis according to
-        [SpecAugment](https://arxiv.org/abs/1904.08779).
-
-        This is copied from the upstream implementation, with a workaround for
-            a particular case of Boolean masking not being supported
-        """
-
-        # `config.apply_spec_augment` can set masking to False
-        if not getattr(self.config, "apply_spec_augment", True):
-            return hidden_states
-
-        # generate indices & apply SpecAugment along time axis
-        batch_size, sequence_length, hidden_size = hidden_states.size()
-
-        if mask_time_indices is not None:
-            # apply SpecAugment along time axis with given mask_time_indices
-            #hidden_states[mask_time_indices] = self.masked_spec_embed.to(hidden_states.dtype)
-
-            # Temporary workaround for Boolean mask error
-            hidden_states = torch.where(
-                mask_time_indices.unsqueeze(2),
-                self.masked_spec_embed.to(hidden_states.dtype).unsqueeze(0),
-                hidden_states
-            )
-            print('pass')
-        elif self.config.mask_time_prob > 0 and self.training:
-            mask_time_indices = _compute_mask_indices(
-                (batch_size, sequence_length),
-                mask_prob=self.config.mask_time_prob,
-                mask_length=self.config.mask_time_length,
-                attention_mask=attention_mask,
-                min_masks=self.config.mask_time_min_masks,
-            )
-            mask_time_indices = torch.tensor(mask_time_indices, device=hidden_states.device, dtype=torch.bool)
-            #hidden_states[mask_time_indices] = self.masked_spec_embed.to(hidden_states.dtype)
-            print(mask_time_indices.shape)
-            print(hidden_states.shape)
-            print(self.mask_spec_embed.shape)
-            hidden_states = torch.where(
-                mask_time_indices.unsqueeze(2),
-                self.masked_spec_embed.to(hidden_states.dtype).unsqueeze(0),
-                hidden_states
-            )
-            print('pass')
-
-        if self.config.mask_feature_prob > 0 and self.training:
-            # generate indices & apply SpecAugment along feature axis
-            mask_feature_indices = _compute_mask_indices(
-                (batch_size, hidden_size),
-                mask_prob=self.config.mask_feature_prob,
-                mask_length=self.config.mask_feature_length,
-                min_masks=self.config.mask_feature_min_masks,
-            )
-            mask_feature_indices = torch.tensor(mask_feature_indices, device=hidden_states.device, dtype=torch.bool)
-            mask_feature_indices = mask_feature_indices[:, None].expand(-1, sequence_length, -1)
-            hidden_states[mask_feature_indices] = 0
-
-        return hidden_states
 
     def _get_feature_vector_attention_mask(
         self, feature_vector_length: int, attention_mask: torch.LongTensor, add_adapter=None

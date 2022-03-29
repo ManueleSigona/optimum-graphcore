@@ -196,6 +196,9 @@ class IPUConfig(BaseConfig):
         if self.enable_half_partials:
             opts.Precision.setPartialsType(torch.float16)
 
+        # Needed by models that use buffers and replication
+        opts.broadcastBuffers(False)
+
         # PopART performance options #
         # Only stream needed tensors back to host
         opts._Popart.set("disableGradAccumulationTensorStreams", True)
