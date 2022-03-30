@@ -12,4 +12,3 @@
     "ipus_per_replica": 8,
     "matmul_proportion": [0.1, 0.1, 0.1, 0.3, 0.3, 0.3, 0.3, 0.1]
   }
-  
