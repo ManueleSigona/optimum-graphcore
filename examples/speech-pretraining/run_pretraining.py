@@ -110,6 +110,15 @@ class ModelArguments:
     ctc_loss_reduction: Optional[str] = field(
         default="mean", metadata={"help": "The way the ctc loss should be reduced. Should be one of 'mean' or 'sum'."}
     )
+    max_gumbel_temperature: Optional[float] = field(
+        default=2.0, metadata={"help": "Maximum temperature for gumbel softmax."}
+    )
+    min_gumbel_temperature: Optional[float] = field(
+        default=0.5, metadata={"help": "Minimum temperature for gumbel softmax."}
+    )
+    gumbel_temperature_decay: Optional[float] = field(
+        default=0.9, metadata={"help": "Decay of gumbel temperature during training."}
+    )
 
 
 @dataclass
@@ -218,12 +227,14 @@ class DataCollatorForWav2Vec2Pretraining:
             Maximum length of the ``input_values`` of the returned list and optionally padding length (see above).
         pad_to_multiple_of (:obj:`int`, `optional`):
             If set will pad the sequence to a multiple of the provided value.
-            This is especially useful to enable the use of Tensor Cores on NVIDIA hardware with compute capability >=
-            7.5 (Volta).
     """
 
     model: Wav2Vec2ForPreTraining
     feature_extractor: Wav2Vec2FeatureExtractor
+    max_gumbel_temperature: float = 2.0
+    min_gumbel_temperature: float = 0.5
+    gumbel_temperature_decay: float = 0.9
+    global_step: int = 0
     padding: Union[bool, str] = "longest"
     pad_to_multiple_of: Optional[int] = None
 
@@ -272,6 +283,14 @@ class DataCollatorForWav2Vec2Pretraining:
         )
         batch["mask_time_indices"] = torch.tensor(mask_time_indices, dtype=torch.long, device=device)
         batch["sampled_negative_indices"] = torch.tensor(sampled_negative_indices, dtype=torch.long, device=device)
+        # Update the Gumbel temperature
+        gumbel_temperature = max(
+            self.max_gumbel_temperature * self.gumbel_temperature_decay**self.global_step,
+            self.min_gumbel_temperature,
+        )
+        self.model.set_gumbel_temperature(gumbel_temperature)
+        self.global_step += 1
+        batch["gumbel_temperature"] = torch.full([batch_size], gumbel_temperature, dtype=torch.float32)
         return batch.data
 
 
@@ -466,7 +485,10 @@ def main():
 
     # Instantiate custom data collator
     data_collator = DataCollatorForWav2Vec2Pretraining(
-        model=model, feature_extractor=feature_extractor)
+        model=model, feature_extractor=feature_extractor,
+        max_gumbel_temperature=model_args.max_gumbel_temperature,
+        min_gumbel_temperature=model_args.min_gumbel_temperature,
+        gumbel_temperature_decay=model_args.gumbel_temperature_decay)
 
     # Initialize Trainer
     trainer = IPUTrainer(

@@ -206,6 +206,7 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
         attention_mask=None,
         mask_time_indices=None,
         sampled_negative_indices=None,
+        gumbel_temperature=None,
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
@@ -239,7 +240,7 @@ class PipelinedWav2Vec2ForPreTraining(Wav2Vec2ForPreTraining, PipelineMixin):
             )
 
         quantized_features, codevector_perplexity = self.quantizer(
-            extract_features, mask_time_indices=mask_time_indices
+            extract_features, gumbel_temperature, mask_time_indices=mask_time_indices
         )
         quantized_features = self.project_q(quantized_features)
 
