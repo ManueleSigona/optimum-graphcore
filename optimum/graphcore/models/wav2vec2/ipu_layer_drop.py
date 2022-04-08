@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+These are the same blocks as in the original implementation in transformers,
+but with a traceable implementation of LayerDrop.
+"""
+
 import torch
 from torch.nn import functional as F
 from transformers.modeling_outputs import BaseModelOutput
