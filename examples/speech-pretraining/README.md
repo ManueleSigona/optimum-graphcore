@@ -19,9 +19,9 @@ limitations under the License.
 
 ## Wav2Vec2 Speech Pre-Training
 
-The script [`run_pretraining.py`](https://github.com/huggingface/optimum-graphcore/tree/main/examples/speech-pretraining/run_pretraining.py) can be used to pre-train a [Wav2Vec2](https://huggingface.co/transformers/model_doc/wav2vec2.html?highlight=wav2vec2) model from scratch.
+The script [`run_pretraining.py`](./run_pretraining.py) can be used to pre-train a [Wav2Vec2](https://huggingface.co/transformers/model_doc/wav2vec2.html) model from scratch.
 
-In the script [`run_pretraining.py`](https://github.com/huggingface/optimum-graphcore/tree/main/examples/speech-pretraining/run_pretraining.py), a Wav2Vec2 model is pre-trained on audio data alone using [Wav2Vec2's contrastive loss objective](https://arxiv.org/abs/2006.11477).
+In the script [`run_pretraining.py`](./run_pretraining.py), a Wav2Vec2 model is pre-trained on audio data alone using [Wav2Vec2's contrastive loss objective](https://arxiv.org/abs/2006.11477).
 
 The following examples show how to pre-train a `"base"`-sized Wav2Vec2 model.
 
@@ -58,7 +58,7 @@ python run_pretraining.py \
 	--dataset_name="librispeech_asr" \
 	--dataset_config_name="clean" \
 	--train_split_name="validation" \
-	--ipu_config_name . \
+	--ipu_config_name Graphcore/wav2vec2-base-ipu \
 	--output_dir="./wav2vec2-pretrained-demo" \
 	--max_duration_in_seconds="20.0" \
 	--min_duration_in_seconds="2.0" \
@@ -72,8 +72,6 @@ python run_pretraining.py \
 	--weight_decay="0.01"
 ```
 
-An equivalent command can be run by executing the script `run-demo.sh`.
-
 ### Base
 
 To pre-train `"base-sized"` Wav2Vec2 model, *e.g.* [facebook/wav2vec2-base](https://huggingface.co/facebook/wav2vec2-base) 
@@ -85,7 +83,7 @@ python run_pretraining.py \
 	--dataset_name="librispeech_asr" \
 	--dataset_config_name="clean" \
 	--train_split_name="train.100" \
-	--ipu_config_name . \
+	--ipu_config_name Graphcore/wav2vec2-base-ipu \
 	--output_dir="./wav2vec2-pretrained-base" \
 	--max_duration_in_seconds="20.0" \
 	--min_duration_in_seconds="2.0" \
@@ -104,8 +102,6 @@ python run_pretraining.py \
 	--adam_beta2="0.98" \
 	--adam_epsilon="1e-04"
 ```
-
-An equivalent command can be run by executing the script `run-base.sh`.
 
 If you increase the effective `batch_size`, for example by increasing the `gradient_accumulation_steps`,
 it is recommended to increase the `learning_rate` to `0.005` for faster convergence.

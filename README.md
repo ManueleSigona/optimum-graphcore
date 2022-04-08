@@ -156,6 +156,7 @@ The following model architectures and tasks are currently supported by 🤗 Opti
 | Hubert  | ✗                  |                    |                    |                                              | :heavy_check_mark:      |                      |                    |                    |                      |
 | ViT     | ✗                  |                    |                    |                                              |                         |                      |                    |                    | :heavy_check_mark:   |
 | LXMERT  | ✗                  |                    |                    |                                              |                         |                      | :heavy_check_mark: |                    |                      |
+| Wav2Vec2| :heavy_check_mark: |                    |                    |                                              |                         |                      |                    |                    |                      |
 
 
 If you find any issue while using those, please open an issue or a pull request.
